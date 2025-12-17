@@ -45,30 +45,42 @@ app.get("/vote", (req, res) => {
 
   if (!user || !msg) return res.send("");
 
+  // Tomar solo el primer bloque antes del espacio
   const rawName = msg.trim().split(" ")[0];
+
+  // Clave interna (normalizada)
   const key = rawName.toLowerCase();
-  const display = capitalize(rawName);
+
+  // Display EXACTO como lo escribió el usuario
+  const display = rawName;
 
   const data = loadJSON(DATA_FILE, { votes: {} });
-  const cooldown = loadJSON(COOLDOWN_FILE, {
-    lastUser: null,
-    timestamp: 0,
-  });
+  const cooldown = loadJSON(COOLDOWN_FILE, {});
 
   const now = Date.now();
 
-  if (cooldown.lastUser === user && now - cooldown.timestamp < COOLDOWN_TIME) {
+  // Inicializar estructuras
+  if (!cooldown[user]) cooldown[user] = {};
+  if (!cooldown[user][key]) cooldown[user][key] = 0;
+
+  // Cooldown SOLO si es mismo user + mismo nombre
+  if (now - cooldown[user][key] < COOLDOWN_TIME) {
     return res.send("You can't vote consecutively.");
   }
 
+  // Inicializar voto si no existe
   if (!data.votes[key]) {
-    data.votes[key] = { display, count: 0 };
+    data.votes[key] = {
+      display,
+      count: 0
+    };
   }
 
+  // Sumar voto
   data.votes[key].count++;
 
-  cooldown.lastUser = user;
-  cooldown.timestamp = now;
+  // Guardar timestamp solo para este user + este nombre
+  cooldown[user][key] = now;
 
   saveJSON(DATA_FILE, data);
   saveJSON(COOLDOWN_FILE, cooldown);
