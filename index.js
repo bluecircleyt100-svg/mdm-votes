@@ -3,6 +3,10 @@ import fs from "fs";
 
 const app = express();
 
+/* ---------------- CONFIG ---------------- */
+
+const PORT = process.env.PORT || 3000;
+
 const DATA_FILE = "./data.json";
 const COOLDOWN_FILE = "./cooldown.json";
 const COOLDOWN_TIME = 60 * 1000;
@@ -21,6 +25,18 @@ const saveJSON = (file, data) => {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 };
 
+const capitalize = (str) =>
+  str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+
+const formatVotes = (n) =>
+  n >= 1000 ? (n / 1000).toFixed(1).replace(".", ",") + "K" : n;
+
+/* ---------------- TEST ---------------- */
+
+app.get("/", (req, res) => {
+  res.send("MDM Votes API ONLINE");
+});
+
 /* ---------------- VOTE ---------------- */
 
 app.get("/vote", (req, res) => {
@@ -34,10 +50,11 @@ app.get("/vote", (req, res) => {
   const display = capitalize(rawName);
 
   const data = loadJSON(DATA_FILE, { votes: {} });
-const cooldown = loadJSON(COOLDOWN_FILE, {
-  lastUser: null,
-  timestamp: 0
-});
+  const cooldown = loadJSON(COOLDOWN_FILE, {
+    lastUser: null,
+    timestamp: 0,
+  });
+
   const now = Date.now();
 
   if (cooldown.lastUser === user && now - cooldown.timestamp < COOLDOWN_TIME) {
@@ -57,7 +74,7 @@ const cooldown = loadJSON(COOLDOWN_FILE, {
   saveJSON(COOLDOWN_FILE, cooldown);
 
   res.send(
-    `Voted for [ ${data.votes[key].display} ]. ${data.votes[key].count} total votes @${user}`
+    `Voted for [ ${display} ]. ${data.votes[key].count} total votes @${user}`
   );
 });
 
@@ -68,16 +85,16 @@ app.get("/rank", (req, res) => {
   if (!name) return res.send("");
 
   const key = name.trim().toLowerCase();
-  const data = loadJSON(DATA_FILE);
+  const data = loadJSON(DATA_FILE, { votes: {} });
 
   if (!data.votes[key]) {
     return res.send(`[ ${capitalize(name)} ] has 0 votes.`);
   }
 
-  const sorted = Object.values(data.votes)
-    .sort((a, b) => b.count - a.count);
-
-  const rank = sorted.findIndex(v => v.display.toLowerCase() === key) + 1;
+  const sorted = Object.values(data.votes).sort((a, b) => b.count - a.count);
+  const rank = sorted.findIndex(
+    (v) => v.display.toLowerCase() === key
+  ) + 1;
 
   res.send(
     `[ ${data.votes[key].display} ] Voting ranking is #${rank} with a total of ${data.votes[key].count} votes.`
@@ -88,21 +105,20 @@ app.get("/rank", (req, res) => {
 
 app.get("/top", (req, res) => {
   const page = parseInt(req.query.page) || 1;
-  const start = page;
-  const end = page + 9;
+  const start = page - 1;
+  const end = start + 10;
 
   const data = loadJSON(DATA_FILE, { votes: {} });
 
-  const sorted = Object.values(data.votes)
-    .sort((a, b) => b.count - a.count);
+  const sorted = Object.values(data.votes).sort((a, b) => b.count - a.count);
 
   let response = "VOTES RANKING:";
 
-  for (let i = start - 1; i < end && i < sorted.length; i++) {
+  for (let i = start; i < end && i < sorted.length; i++) {
     const rank = i + 1;
     const name = sorted[i].display.toUpperCase();
 
-    if (i === start - 1) {
+    if (i === start) {
       response += ` #${rank} ${name} (${formatVotes(sorted[i].count)})`;
     } else {
       response += ` #${rank} ${name}`;
@@ -115,14 +131,5 @@ app.get("/top", (req, res) => {
 /* ---------------- START ---------------- */
 
 app.listen(PORT, () => {
-  console.log("MDM Votes API running on port", PORT);
-});
-const PORT = process.env.PORT || 3000;
-
-app.get("/", (req, res) => {
-  res.send("MDM Votes API ONLINE");
-});
-
-app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+  console.log("✅ MDM Votes API running on port", PORT);
 });
