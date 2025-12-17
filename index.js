@@ -9,15 +9,17 @@ const COOLDOWN_TIME = 60 * 1000;
 
 /* ---------------- UTILIDADES ---------------- */
 
-const loadJSON = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
-const saveJSON = (file, data) =>
+const loadJSON = (file, defaultData) => {
+  if (!fs.existsSync(file)) {
+    fs.writeFileSync(file, JSON.stringify(defaultData, null, 2));
+    return defaultData;
+  }
+  return JSON.parse(fs.readFileSync(file, "utf8"));
+};
+
+const saveJSON = (file, data) => {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
-
-const capitalize = (str) =>
-  str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
-
-const formatVotes = (n) =>
-  n >= 1000 ? (n / 1000).toFixed(1).replace(".", ",") + "K" : n;
+};
 
 /* ---------------- VOTE ---------------- */
 
@@ -31,8 +33,11 @@ app.get("/vote", (req, res) => {
   const key = rawName.toLowerCase();
   const display = capitalize(rawName);
 
-  const data = loadJSON(DATA_FILE);
-  const cooldown = loadJSON(COOLDOWN_FILE);
+  const data = loadJSON(DATA_FILE, { votes: {} });
+const cooldown = loadJSON(COOLDOWN_FILE, {
+  lastUser: null,
+  timestamp: 0
+});
   const now = Date.now();
 
   if (cooldown.lastUser === user && now - cooldown.timestamp < COOLDOWN_TIME) {
@@ -86,7 +91,7 @@ app.get("/top", (req, res) => {
   const start = page;
   const end = page + 9;
 
-  const data = loadJSON(DATA_FILE);
+  const data = loadJSON(DATA_FILE, { votes: {} });
 
   const sorted = Object.values(data.votes)
     .sort((a, b) => b.count - a.count);
