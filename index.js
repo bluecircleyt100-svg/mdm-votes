@@ -2,7 +2,6 @@ import express from "express";
 import fs from "fs";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
 const DATA_FILE = "./data.json";
 const COOLDOWN_FILE = "./cooldown.json";
