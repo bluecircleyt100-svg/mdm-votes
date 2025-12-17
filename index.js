@@ -113,7 +113,6 @@ app.get("/top", (req, res) => {
 app.listen(PORT, () => {
   console.log("MDM Votes API running on port", PORT);
 });
-const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.get("/", (req, res) => {
