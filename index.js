@@ -1,140 +1,112 @@
 import express from "express";
-import fs from "fs";
+import { MongoClient } from "mongodb";
 
 const app = express();
-
-/* ---------------- CONFIG ---------------- */
-
 const PORT = process.env.PORT || 3000;
+const MONGO_URI = process.env.MONGODB_URI;
 
-const DATA_FILE = "./data.json";
-const COOLDOWN_FILE = "./cooldown.json";
-const COOLDOWN_TIME = 60 * 1000;
+/* ---------------- MONGO ---------------- */
 
-/* ---------------- UTILIDADES ---------------- */
+const client = new MongoClient(MONGO_URI);
+await client.connect();
 
-const loadJSON = (file, defaultData) => {
-  if (!fs.existsSync(file)) {
-    fs.writeFileSync(file, JSON.stringify(defaultData, null, 2));
-    return defaultData;
-  }
-  return JSON.parse(fs.readFileSync(file, "utf8"));
-};
+const db = client.db("mdm_votes");
+const votesCol = db.collection("votes");
+const cooldownCol = db.collection("cooldowns");
 
-const saveJSON = (file, data) => {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
-};
-
-const capitalize = (str) =>
-  str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+/* ---------------- UTILS ---------------- */
 
 const formatVotes = (n) =>
   n >= 1000 ? (n / 1000).toFixed(1).replace(".", ",") + "K" : n;
 
-/* ---------------- TEST ---------------- */
-
-app.get("/", (req, res) => {
-  res.send("MDM Votes API ONLINE");
-});
-
 /* ---------------- VOTE ---------------- */
 
-app.get("/vote", (req, res) => {
+app.get("/vote", async (req, res) => {
   const user = req.query.user;
   const msg = req.query.msg;
 
   if (!user || !msg) return res.send("");
 
-  // Tomar solo el primer bloque antes del espacio
-  const rawName = msg.trim().split(" ")[0];
-
-  // Clave interna (normalizada)
+  const rawName = msg.trim().split(" ")[0]; // respeta mayúsculas
   const key = rawName.toLowerCase();
 
-  // Display EXACTO como lo escribió el usuario
-  const display = rawName;
-
-  const data = loadJSON(DATA_FILE, { votes: {} });
-  const cooldown = loadJSON(COOLDOWN_FILE, {});
-
   const now = Date.now();
+  const cooldownKey = `${user}:${key}`;
 
-  // Inicializar estructuras
-  if (!cooldown[user]) cooldown[user] = {};
-  if (!cooldown[user][key]) cooldown[user][key] = 0;
+  const lastVote = await cooldownCol.findOne({ _id: cooldownKey });
 
-  // Cooldown SOLO si es mismo user + mismo nombre
-  if (now - cooldown[user][key] < COOLDOWN_TIME) {
+  if (lastVote && now - lastVote.timestamp < 60_000) {
     return res.send("You can't vote consecutively.");
   }
 
-  // Inicializar voto si no existe
-  if (!data.votes[key]) {
-    data.votes[key] = {
-      display,
-      count: 0
-    };
-  }
+  await votesCol.updateOne(
+    { _id: key },
+    {
+      $setOnInsert: { display: rawName },
+      $inc: { count: 1 }
+    },
+    { upsert: true }
+  );
 
-  // Sumar voto
-  data.votes[key].count++;
+  await cooldownCol.updateOne(
+    { _id: cooldownKey },
+    { $set: { timestamp: now } },
+    { upsert: true }
+  );
 
-  // Guardar timestamp solo para este user + este nombre
-  cooldown[user][key] = now;
-
-  saveJSON(DATA_FILE, data);
-  saveJSON(COOLDOWN_FILE, cooldown);
+  const vote = await votesCol.findOne({ _id: key });
 
   res.send(
-    `Voted for [ ${display} ]. ${data.votes[key].count} total votes @${user}`
+    `Voted for [ ${vote.display} ]. ${vote.count} total votes @${user}`
   );
 });
 
 /* ---------------- RANK ---------------- */
 
-app.get("/rank", (req, res) => {
+app.get("/rank", async (req, res) => {
   const name = req.query.name;
   if (!name) return res.send("");
 
   const key = name.trim().toLowerCase();
-  const data = loadJSON(DATA_FILE, { votes: {} });
 
-  if (!data.votes[key]) {
-    return res.send(`[ ${capitalize(name)} ] has 0 votes.`);
+  const all = await votesCol
+    .find({})
+    .sort({ count: -1 })
+    .toArray();
+
+  const index = all.findIndex(v => v._id === key);
+
+  if (index === -1) {
+    return res.send(`[ ${name} ] has 0 votes.`);
   }
 
-  const sorted = Object.values(data.votes).sort((a, b) => b.count - a.count);
-  const rank = sorted.findIndex(
-    (v) => v.display.toLowerCase() === key
-  ) + 1;
-
   res.send(
-    `[ ${data.votes[key].display} ] Voting ranking is #${rank} with a total of ${data.votes[key].count} votes.`
+    `[ ${all[index].display} ] Voting ranking is #${index + 1} with a total of ${all[index].count} votes.`
   );
 });
 
 /* ---------------- TOP ---------------- */
 
-app.get("/top", (req, res) => {
+app.get("/top", async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const start = page - 1;
   const end = start + 10;
 
-  const data = loadJSON(DATA_FILE, { votes: {} });
-
-  const sorted = Object.values(data.votes).sort((a, b) => b.count - a.count);
+  const sorted = await votesCol
+    .find({})
+    .sort({ count: -1 })
+    .toArray();
 
   let response = "VOTES RANKING:";
 
   for (let i = start; i < end && i < sorted.length; i++) {
     const rank = i + 1;
     const name = sorted[i].display.toUpperCase();
+    const votes = formatVotes(sorted[i].count);
 
-    if (i === start) {
-      response += ` #${rank} ${name} (${formatVotes(sorted[i].count)})`;
-    } else {
-      response += ` #${rank} ${name}`;
-    }
+    response += i === start
+      ? ` #${rank} ${name} (${votes})`
+      : ` #${rank} ${name}`;
   }
 
   res.send(response);
