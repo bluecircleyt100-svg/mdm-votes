@@ -14,15 +14,11 @@ const supabase = createClient(
 const formatVotes = (n) =>
   n >= 1000 ? (n / 1000).toFixed(1).replace(".", ",") + "K" : n;
 
-const getArgentinaStartOfDay = () => {
+const getArgentinaDayString = () => {
   const now = new Date();
-  const arg = new Date(
-    now.toLocaleString("en-US", {
-      timeZone: "America/Argentina/Buenos_Aires",
-    })
-  );
-  arg.setHours(0, 0, 0, 0);
-  return arg.toISOString().slice(0, 10); // YYYY-MM-DD
+  return now.toLocaleDateString("en-CA", {
+    timeZone: "America/Argentina/Buenos_Aires"
+  }); // YYYY-MM-DD
 };
 
 /* ---------------- VOTE ---------------- */
@@ -146,14 +142,19 @@ app.get("/top", async (req, res) => {
 /* ---------------- FASTEST (HOY) ---------------- */
 
 app.get("/fastest", async (req, res) => {
-  const day = getArgentinaStartOfDay();
+  const day = getArgentinaDayString(); // "YYYY-MM-DD"
 
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("daily_votes")
-    .select("*")
+    .select("display, count")
     .eq("day", day)
     .order("count", { ascending: false })
     .limit(1);
+
+  if (error) {
+    console.error(error);
+    return res.send("Database error.");
+  }
 
   if (!data || data.length === 0) {
     return res.send("No votes registered today.");
