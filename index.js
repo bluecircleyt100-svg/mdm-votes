@@ -5,6 +5,11 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const MONGO_URI = process.env.MONGODB_URI;
 
+if (!MONGO_URI) {
+  console.error("❌ MONGODB_URI is not defined");
+  process.exit(1);
+}
+
 /* ---------------- MONGO ---------------- */
 
 const client = new MongoClient(MONGO_URI);
@@ -13,19 +18,20 @@ await client.connect();
 const db = client.db("mdm_votes");
 const votesCol = db.collection("votes");
 const cooldownCol = db.collection("cooldowns");
-const dailyCol = db.collection("daily_votes");
+const dailyVotesCol = db.collection("daily_votes");
 
 /* ---------------- UTILS ---------------- */
 
 const formatVotes = (n) =>
   n >= 1000 ? (n / 1000).toFixed(1).replace(".", ",") + "K" : n;
 
-const getArgDate = () => {
+const getArgentinaStartOfDay = () => {
   const now = new Date();
-  const argTime = new Date(
+  const arg = new Date(
     now.toLocaleString("en-US", { timeZone: "America/Argentina/Buenos_Aires" })
   );
-  return argTime.toISOString().split("T")[0];
+  arg.setHours(0, 0, 0, 0);
+  return arg;
 };
 
 /* ---------------- VOTE ---------------- */
@@ -33,14 +39,11 @@ const getArgDate = () => {
 app.get("/vote", async (req, res) => {
   const user = req.query.user;
   const msg = req.query.msg;
-
   if (!user || !msg) return res.send("");
 
-  const rawName = msg.trim().split(" ")[0];
+  const rawName = msg.trim().split(" ")[0]; // respeta mayúsculas
   const key = rawName.toLowerCase();
-
   const now = Date.now();
-  const today = getArgDate();
 
   const cooldownKey = `${user}:${key}`;
   const lastVote = await cooldownCol.findOne({ _id: cooldownKey });
@@ -49,23 +52,19 @@ app.get("/vote", async (req, res) => {
     return res.send("You can't vote consecutively.");
   }
 
-  // TOTAL votes (histórico)
   await votesCol.updateOne(
     { _id: key },
-    {
-      $setOnInsert: { display: rawName },
-      $inc: { count: 1 }
-    },
+    { $setOnInsert: { display: rawName }, $inc: { count: 1 } },
     { upsert: true }
   );
 
-  // DAILY vote
-  await dailyCol.insertOne({
-    keyword: key,
-    display: rawName,
-    date: today,
-    timestamp: now
-  });
+  const dayStart = getArgentinaStartOfDay();
+
+  await dailyVotesCol.updateOne(
+    { keyword: key, day: dayStart },
+    { $setOnInsert: { display: rawName }, $inc: { count: 1 } },
+    { upsert: true }
+  );
 
   await cooldownCol.updateOne(
     { _id: cooldownKey },
@@ -80,35 +79,6 @@ app.get("/vote", async (req, res) => {
   );
 });
 
-/* ---------------- FASTEST ---------------- */
-
-app.get("/fastest", async (req, res) => {
-  const today = getArgDate();
-
-  const results = await dailyCol.aggregate([
-    { $match: { date: today } },
-    {
-      $group: {
-        _id: "$keyword",
-        display: { $first: "$display" },
-        votes: { $sum: 1 }
-      }
-    },
-    { $sort: { votes: -1 } },
-    { $limit: 1 }
-  ]).toArray();
-
-  if (!results.length) {
-    return res.send("No votes registered today.");
-  }
-
-  const fastest = results[0];
-
-  res.send(
-    `Current Fastest Keyword: ${fastest.display.toUpperCase()} [ ${fastest.votes} Votes Today ] -> All information comes from 0:00 (Argentine time) until the time the command was placed.`
-  );
-});
-
 /* ---------------- RANK ---------------- */
 
 app.get("/rank", async (req, res) => {
@@ -117,7 +87,7 @@ app.get("/rank", async (req, res) => {
 
   const key = name.trim().toLowerCase();
 
-  const all = await votesCol.find({}).sort({ count: -1 }).toArray();
+  const all = await votesCol.find().sort({ count: -1 }).toArray();
   const index = all.findIndex(v => v._id === key);
 
   if (index === -1) {
@@ -136,7 +106,7 @@ app.get("/top", async (req, res) => {
   const start = page - 1;
   const end = start + 10;
 
-  const sorted = await votesCol.find({}).sort({ count: -1 }).toArray();
+  const sorted = await votesCol.find().sort({ count: -1 }).toArray();
 
   let response = "VOTES RANKING:";
 
@@ -151,6 +121,28 @@ app.get("/top", async (req, res) => {
   }
 
   res.send(response);
+});
+
+/* ---------------- FASTEST (HOY) ---------------- */
+
+app.get("/fastest", async (req, res) => {
+  const dayStart = getArgentinaStartOfDay();
+
+  const top = await dailyVotesCol
+    .find({ day: dayStart })
+    .sort({ count: -1 })
+    .limit(1)
+    .toArray();
+
+  if (top.length === 0) {
+    return res.send("No votes registered today.");
+  }
+
+  const winner = top[0];
+
+  res.send(
+    `Current Fastest Keyword: ${winner.display.toUpperCase()} [ ${winner.count} Votes Today ] -> All information comes from 0:00 (Argentine time) until the time the command was placed.`
+  );
 });
 
 /* ---------------- START ---------------- */
