@@ -1,24 +1,13 @@
 import express from "express";
-import { MongoClient } from "mongodb";
+import { createClient } from "@supabase/supabase-js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const MONGO_URI = process.env.MONGODB_URI;
 
-if (!MONGO_URI) {
-  console.error("❌ MONGODB_URI is not defined");
-  process.exit(1);
-}
-
-/* ---------------- MONGO ---------------- */
-
-const client = new MongoClient(MONGO_URI);
-await client.connect();
-
-const db = client.db("mdm_votes");
-const votesCol = db.collection("votes");
-const cooldownCol = db.collection("cooldowns");
-const dailyVotesCol = db.collection("daily_votes");
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
 
 /* ---------------- UTILS ---------------- */
 
@@ -28,67 +17,95 @@ const formatVotes = (n) =>
 const getArgentinaStartOfDay = () => {
   const now = new Date();
   const arg = new Date(
-    now.toLocaleString("en-US", { timeZone: "America/Argentina/Buenos_Aires" })
+    now.toLocaleString("en-US", {
+      timeZone: "America/Argentina/Buenos_Aires",
+    })
   );
   arg.setHours(0, 0, 0, 0);
-  return arg;
+  return arg.toISOString().slice(0, 10); // YYYY-MM-DD
 };
 
 /* ---------------- VOTE ---------------- */
 
 app.get("/vote", async (req, res) => {
-  const user = req.query.user;
-  const msg = req.query.msg;
+  const { user, msg } = req.query;
   if (!user || !msg) return res.send("");
 
-  const rawName = msg.trim().split(" ")[0]; // respeta mayúsculas
+  const rawName = msg.trim().split(" ")[0]; // respeta mayúsculas exactas
   const key = rawName.toLowerCase();
   const now = Date.now();
 
-  const cooldownKey = `${user}:${key}`;
-  const lastVote = await cooldownCol.findOne({ _id: cooldownKey });
+  const cooldownId = `${user}:${key}`;
 
-  if (lastVote && now - lastVote.timestamp < 60_000) {
+  const { data: lastCooldown } = await supabase
+    .from("cooldowns")
+    .select("timestamp")
+    .eq("id", cooldownId)
+    .single();
+
+  if (lastCooldown && now - lastCooldown.timestamp < 60000) {
     return res.send("You can't vote consecutively.");
   }
 
-  await votesCol.updateOne(
-    { _id: key },
-    { $setOnInsert: { display: rawName }, $inc: { count: 1 } },
-    { upsert: true }
-  );
+  /* TOTAL VOTES */
+  const { data: existingVote } = await supabase
+    .from("votes")
+    .select("count")
+    .eq("keyword", key)
+    .single();
 
-  const dayStart = getArgentinaStartOfDay();
+  const newCount = existingVote ? existingVote.count + 1 : 1;
 
-  await dailyVotesCol.updateOne(
-    { keyword: key, day: dayStart },
-    { $setOnInsert: { display: rawName }, $inc: { count: 1 } },
-    { upsert: true }
-  );
+  await supabase.from("votes").upsert({
+    keyword: key,
+    display: rawName,
+    count: newCount,
+  });
 
-  await cooldownCol.updateOne(
-    { _id: cooldownKey },
-    { $set: { timestamp: now } },
-    { upsert: true }
-  );
+  /* DAILY VOTES */
+  const day = getArgentinaStartOfDay();
 
-  const vote = await votesCol.findOne({ _id: key });
+  const { data: daily } = await supabase
+    .from("daily_votes")
+    .select("count")
+    .eq("keyword", key)
+    .eq("day", day)
+    .single();
+
+  const dailyCount = daily ? daily.count + 1 : 1;
+
+  await supabase.from("daily_votes").upsert({
+    keyword: key,
+    display: rawName,
+    day,
+    count: dailyCount,
+  });
+
+  /* COOLDOWN */
+  await supabase.from("cooldowns").upsert({
+    id: cooldownId,
+    timestamp: now,
+  });
 
   res.send(
-    `Voted for [ ${vote.display} ]. ${vote.count} total votes @${user}`
+    `Voted for [ ${rawName} ]. ${newCount} total votes @${user}`
   );
 });
 
 /* ---------------- RANK ---------------- */
 
 app.get("/rank", async (req, res) => {
-  const name = req.query.name;
+  const { name } = req.query;
   if (!name) return res.send("");
 
   const key = name.trim().toLowerCase();
 
-  const all = await votesCol.find().sort({ count: -1 }).toArray();
-  const index = all.findIndex(v => v._id === key);
+  const { data: all } = await supabase
+    .from("votes")
+    .select("*")
+    .order("count", { ascending: false });
+
+  const index = all.findIndex((v) => v.keyword === key);
 
   if (index === -1) {
     return res.send(`[ ${name} ] has 0 votes.`);
@@ -103,21 +120,24 @@ app.get("/rank", async (req, res) => {
 
 app.get("/top", async (req, res) => {
   const page = parseInt(req.query.page) || 1;
-  const start = page - 1;
-  const end = start + 10;
+  const start = (page - 1) * 10;
 
-  const sorted = await votesCol.find().sort({ count: -1 }).toArray();
+  const { data: sorted } = await supabase
+    .from("votes")
+    .select("*")
+    .order("count", { ascending: false });
 
   let response = "VOTES RANKING:";
 
-  for (let i = start; i < end && i < sorted.length; i++) {
+  for (let i = start; i < start + 10 && i < sorted.length; i++) {
     const rank = i + 1;
     const name = sorted[i].display.toUpperCase();
     const votes = formatVotes(sorted[i].count);
 
-    response += i === start
-      ? ` #${rank} ${name} (${votes})`
-      : ` #${rank} ${name}`;
+    response +=
+      i === start
+        ? ` #${rank} ${name} (${votes})`
+        : ` #${rank} ${name}`;
   }
 
   res.send(response);
@@ -126,19 +146,20 @@ app.get("/top", async (req, res) => {
 /* ---------------- FASTEST (HOY) ---------------- */
 
 app.get("/fastest", async (req, res) => {
-  const dayStart = getArgentinaStartOfDay();
+  const day = getArgentinaStartOfDay();
 
-  const top = await dailyVotesCol
-    .find({ day: dayStart })
-    .sort({ count: -1 })
-    .limit(1)
-    .toArray();
+  const { data } = await supabase
+    .from("daily_votes")
+    .select("*")
+    .eq("day", day)
+    .order("count", { ascending: false })
+    .limit(1);
 
-  if (top.length === 0) {
+  if (!data || data.length === 0) {
     return res.send("No votes registered today.");
   }
 
-  const winner = top[0];
+  const winner = data[0];
 
   res.send(
     `Current Fastest Keyword: ${winner.display.toUpperCase()} [ ${winner.count} Votes Today ] -> All information comes from 0:00 (Argentine time) until the time the command was placed.`
